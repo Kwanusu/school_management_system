@@ -14,4 +14,8 @@ class User(AbstractUser):
     
     @property
     def is_teacher(self):
-        return self.role == self.Role.TEACHER    
+        return self.role == self.Role.TEACHER 
+    
+    
+    
+       
