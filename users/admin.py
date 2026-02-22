@@ -1,5 +1,12 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
 from .models import User
 
-# Register your models here.
-admin.site.register(User)
+@admin.register(User)
+class CustomUserAdmin(UserAdmin):
+    # Add 'role' and 'bio' to the existing UserAdmin fields
+    fieldsets = UserAdmin.fieldsets + (
+        (None, {'fields': ('role', 'bio')}),
+    )
+    list_display = ('username', 'email', 'role', 'is_staff')
+    list_filter = ('role', 'is_staff', 'is_superuser')
