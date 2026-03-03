@@ -36,7 +36,7 @@ router = DefaultRouter()
 
 router.register(r'courses', CourseViewSet, basename='course')
 router.register(r'enrollments', EnrollmentViewSet, basename='enrollment')
-router.register(r'users', UserViewSet, basename='user')
+router.register(r'auth', UserViewSet, basename='auth')
 router.register(r'logs', SystemLogViewSet, basename='log')
 
 urlpatterns = [

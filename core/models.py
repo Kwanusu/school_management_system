@@ -32,22 +32,50 @@ class Course(models.Model):
     objects = CourseQuerySet.as_manager()
 
     def clean(self):
-        """
-        Professional Logic: Validation happens before the data hits the database.
-        Constraint: Course can be public ONLY if it is free.
-        """
-        if self.is_published and self.price > 0:
-            raise ValidationError(
-                {"is_published": "Paid courses cannot be set to Public (Free access)."}
-            )
+            # Validation logic
+            if self.is_published and self.price > 0:
+                raise ValidationError("Paid courses cannot be published.")
 
     def save(self, *args, **kwargs):
-        self.full_clean() # Force validation on every save
+        # If we have a teacher, we can safely clean
+        if self.teacher_id: 
+            self.full_clean()
         super().save(*args, **kwargs)
 
+
+class Topic(models.Model):
+    course = models.ForeignKey(Course, related_name='topics', on_delete=models.CASCADE)
+    title = models.CharField(max_length=200)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+
     def __str__(self):
-        return f"{self.title} (${self.price})" 
+        return f"{self.course.code} - {self.title}"
+
+class Lesson(models.Model):
+    # Lesson types to differentiate between content, challenges, and projects
+    LESSON_TYPES = (
+        ('LESSON', 'Standard Lesson'),
+        ('CHALLENGE', 'Daily Challenge'),
+        ('WEEKLY_PROJECT', 'Weekly Project'),
+        ('CAPSTONE', 'Capstone Project'),
+    )
     
+    topic = models.ForeignKey(Topic, related_name='lessons', on_delete=models.CASCADE)
+    title = models.CharField(max_length=200)
+    content = models.TextField(help_text="The actual reading/video material")
+    lesson_type = models.CharField(max_length=20, choices=LESSON_TYPES, default='LESSON')
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+
+    def __str__(self):
+        return f"[{self.lesson_type}] {self.title}"
+
+
 class Enrollment(models.Model):
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
@@ -80,4 +108,6 @@ class TaskSubmission(models.Model):
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     file = models.FileField(upload_to='submissions/')
     is_completed = models.BooleanField(default=False)
-    progress_percentage = models.IntegerField(default=0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+    progress_percentage = models.IntegerField(default=0)   
+    
+    

@@ -135,7 +135,7 @@ DATABASES = {
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT', default='5432'), # Fallback to default port if not provided
+        'PORT': config('DB_PORT', default='5433'), # Fallback to default port if not provided
     }
 }
 

@@ -1,5 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from rest_framework import viewsets, permissions
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 User = get_user_model()
 
@@ -49,21 +52,4 @@ class RegisterSerializer(serializers.ModelSerializer):
             bio=validated_data.get('bio', '')
         )
         return user
-    
-from rest_framework import viewsets, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from .serializers import UserSerializer
 
-class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
-
-    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
-    def me(self, request):
-        """
-        Endpoint: /api/users/me/
-        Returns the logged-in user's details for Redux initialization.
-        """
-        serializer = self.get_serializer(request.user)
-        return Response(serializer.data)
