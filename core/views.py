@@ -1,77 +1,59 @@
-from rest_framework.exceptions import PermissionDenied
-from .serializers import CourseDetailSerializer, TaskSerializer, EnrollmentSerializer, CourseSerializer, CourseCreateSerializer, CalendarEventSerializer, TaskSubmissionSerializer
-from .models import Task,Course, TaskSubmission, CalendarEvent
-from django.db.models import Count
-from django.db import models
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from django.db.models import Q, Count
+from django.contrib.auth import get_user_model
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from django.db.models import Q, Count
 from rest_framework.exceptions import PermissionDenied
-from users.models import User
 
+from .models import Task, Course, TaskSubmission, CalendarEvent, Enrollment
+from .serializers import (
+    CourseDetailSerializer, TaskSerializer, EnrollmentSerializer, 
+    CourseSerializer, CourseCreateSerializer, CalendarEventSerializer, 
+    TaskSubmissionSerializer
+)
 
-
-class TaskViewSet(viewsets.ModelViewSet):
-    serializer_class = TaskSerializer
-
-    def get_queryset(self):
-        user = self.request.user
-        if user.role == 'STUDENT':
-            # Students only see tasks for courses they are enrolled in
-            return Task.objects.filter(course__enrollment__student=user)
-        if user.role == 'TEACHER':
-            # Teachers see tasks for courses they teach
-            return Task.objects.filter(course__teacher=user)
-        return Task.objects.all() # Admin
-
-class EnrollmentViewSet(viewsets.ModelViewSet):
-    """
-    Logic: Teachers and Admins can create enrollments.
-    Students can only view their own.
-    """
-    serializer_class = EnrollmentSerializer
-
-    def perform_create(self, serializer):
-        if self.request.user.role not in ['ADMIN', 'TEACHER']:
-            raise PermissionDenied("Only staff can enroll students.")
-        serializer.save()
+User = get_user_model()
 
 class CourseViewSet(viewsets.ModelViewSet):
-    # Default fallback serializer
+    """
+    ViewSet for viewing and editing course instances.
+    Provides logic for public listings, teacher-owned courses, and student enrollments.
+    """
     serializer_class = CourseSerializer
 
     def get_queryset(self):
+        """
+        Filters courses based on user role:
+        - Anonymous: Publicly published free courses.
+        - Teacher: Courses where they are the primary instructor.
+        - Student: Enrolled courses or public free courses.
+        - Admin: All courses.
+        """
         user = self.request.user
-        # Base logic with student annotations
-        base_queryset = Course.objects.annotate(student_count=Count('enrollment'))
+        base_queryset = Course.objects.annotate(student_count=Count('enrolled_students'))
 
         if user.is_anonymous:
             return base_queryset.filter(is_published=True, price=0)
-
         if user.role == 'TEACHER':
-            # Teachers see their own courses (including drafts)
             return base_queryset.filter(teacher=user)
-
         if user.role == 'STUDENT':
-            # Students see what they bought OR what is free/published
-            return base_queryset.filter(
-                Q(enrollment__student=user) | Q(is_published=True, price=0)
-            ).distinct()
-
+            return base_queryset.filter(Q(enrolled_students=user) | Q(is_published=True, price=0)).distinct()
         return base_queryset.all()
-    
+
     def get_permissions(self):
+        """
+        Allows anyone to view course lists/details, but requires authentication for modifications.
+        """
         if self.action in ['list', 'retrieve']:
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
 
     def get_serializer_class(self):
         """
-        Critical Fix: Ensure we use the CreateSerializer 
-        when POSTing to handle the teacher_id and topics.
+        Returns specialized serializers for different actions:
+        - create: CourseCreateSerializer (handles teacher assignment).
+        - retrieve: CourseDetailSerializer (includes full related data).
+        - default: CourseSerializer.
         """
         if self.action == 'create':
             return CourseCreateSerializer
@@ -81,107 +63,189 @@ class CourseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """
-        Sets the teacher before saving to prevent IntegrityError.
-        This teacher object is passed into serializer.create() 
-        via validated_data['teacher'].
+        Assigns the current user as the teacher of the course.
+        Only users with the 'TEACHER' role or Admin status can create courses.
         """
         if self.request.user.role != 'TEACHER' and not self.request.user.is_staff:
             raise PermissionDenied("Only teachers can create courses.")
-            
-        # Passing 'teacher' here is what fills that NULL column in your DB!
         serializer.save(teacher=self.request.user)
 
     @action(detail=False, methods=['get'], url_path='my-courses')
     def my_courses(self, request):
+        """
+        GET /api/courses/my-courses/
+        Dashboard endpoint for teachers to view courses they have created.
+        """
         if request.user.role != 'TEACHER':
-            return Response({"detail": "Not a teacher account."}, status=status.HTTP_403_FORBIDDEN)
-            
+            return Response({"detail": "Access restricted to teachers."}, status=403)
+        
         courses = Course.objects.filter(teacher=request.user).annotate(
-            student_count=Count('enrollment')
+            student_count=Count('enrolled_students')
         )
-        # Using the base serializer for list view
+        serializer = self.get_serializer(courses, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='enrolled-courses')
+    def enrolled_courses(self, request):
+        """
+        GET /api/courses/enrolled-courses/
+        Dashboard endpoint for students to view courses they are currently enrolled in.
+        """
+        if request.user.role != 'STUDENT':
+            return Response({"detail": "Access restricted to students."}, status=403)
+
+        courses = Course.objects.filter(enrolled_students=request.user).annotate(
+            student_count=Count('enrolled_students')
+        ).distinct()
         serializer = self.get_serializer(courses, many=True)
         return Response(serializer.data)
 
 
+class TaskViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Course Tasks.
+    Visibility is restricted to courses the user is involved in.
+    """
+    serializer_class = TaskSerializer
+
+    def get_queryset(self):
+        """
+        Restricts task visibility:
+        - Students: Tasks from courses they are enrolled in.
+        - Teachers: Tasks from courses they teach.
+        """
+        user = self.request.user
+        if user.role == 'STUDENT':
+            return Task.objects.filter(course__enrolled_students=user)
+        if user.role == 'TEACHER':
+            return Task.objects.filter(course__teacher=user)
+        return Task.objects.all()
+
+
+class EnrollmentViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet to manage student enrollments.
+    Allows staff to create records and students to view their own enrollment history.
+    """
+    serializer_class = EnrollmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Students see only their own enrollment records; Staff see all.
+        """
+        user = self.request.user
+        if user.role == 'STUDENT':
+            return Enrollment.objects.filter(student=user)
+        return Enrollment.objects.all()
+
+    def perform_create(self, serializer):
+        """
+        Restricts enrollment creation to Admins or Teachers.
+        """
+        if self.request.user.role not in ['ADMIN', 'TEACHER']:
+            raise PermissionDenied("Only staff can enroll students.")
+        serializer.save()
+
+
 class CalendarEventViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for course-related calendar events.
+    """
     serializer_class = CalendarEventSerializer
 
     def get_queryset(self):
+        """
+        Filters events based on the user's participation in the associated course.
+        """
         user = self.request.user
-        # Only show events for courses the user is involved in
         if user.role == 'STUDENT':
-            return CalendarEvent.objects.filter(course__enrollment__student=user)
+            return CalendarEvent.objects.filter(course__enrolled_students=user)
         if user.role == 'TEACHER':
             return CalendarEvent.objects.filter(course__teacher=user)
         return CalendarEvent.objects.all()
 
+
 class TaskSubmissionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for handling student task submissions and teacher grading.
+    """
     serializer_class = TaskSubmissionSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        """
+        Ensures students see only their work, and teachers see work for their courses.
+        """
         user = self.request.user
         if user.role == 'STUDENT':
             return TaskSubmission.objects.filter(student=user)
-        return TaskSubmission.objects.filter(task__course__teacher=user)
-    
-    def get_queryset(self):
-        user = self.request.user
-        
-        # Layer 1: If you are a student, you ONLY see your own rows.
-        # You cannot access /api/submissions/10/ if it belongs to someone else.
-        if user.role == 'STUDENT':
-            return TaskSubmission.objects.filter(student=user)
-            
-        # Layer 2: Teachers only see submissions for their own courses.
         return TaskSubmission.objects.filter(task__course__teacher=user)
 
     def perform_create(self, serializer):
+        """
+        Automatically assigns the submitting user as the 'student' on the submission.
+        """
         serializer.save(student=self.request.user)
 
-    @action(detail=True, methods=['patch', 'post'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=['post'], url_path='grade')
     def grade(self, request, pk=None):
         """
-        Endpoint: POST /api/core/submissions/{id}/grade/
-        Allows a teacher to grade a specific submission.
+        POST /api/submissions/{id}/grade/
+        Allows a teacher to apply a grade and feedback to a specific submission.
+        Validates that the requester is the instructor for the course.
         """
         submission = self.get_object()
-        
-        # Security: Ensure only the instructor of the course can grade this
         if request.user != submission.task.course.teacher:
             raise PermissionDenied("You are not authorized to grade this course.")
 
-        # Validation: Check if grade and feedback are in the request
         grade = request.data.get('grade')
         feedback = request.data.get('feedback', '')
 
         if grade is None:
-            return Response({"error": "Grade is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Grade is required"}, status=400)
 
-        # Update the submission fields
         submission.grade = grade
         submission.feedback = feedback
-        submission.is_graded = True # Assuming you have this field
+        submission.is_graded = True 
         submission.save()
 
-        # Return the updated submission data
         serializer = self.get_serializer(submission)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-    
+        return Response(serializer.data)
+
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([permissions.IsAuthenticated])
 def enroll_student(request, course_id):
+    """
+    Functional view to manually enroll a student into a course via email.
+    
+    Expects:
+    - course_id: URL parameter
+    - email: JSON body key
+    
+    Actions:
+    1. Validates user exists and has 'STUDENT' role.
+    2. Adds user to Course.enrolled_students (M2M).
+    3. Creates/Updates Enrollment tracking model record.
+    """
     email = request.data.get('email')
     try:
-        student = User.objects.get(email=email)
+        student = User.objects.get(email__iexact=email)
         course = Course.objects.get(id=course_id)
         
-        # Prevent double enrollment
+        if student.role != 'STUDENT':
+            return Response({"message": "User is not a student."}, status=400)
+            
         if course.enrolled_students.filter(id=student.id).exists():
             return Response({"message": "Student already enrolled"}, status=400)
             
         course.enrolled_students.add(student)
-        return Response({"message": "Enrollment successful"}, status=200)
-    except User.DoesNotExist:
-        return Response({"message": "No student found with this email"}, status=404)    
+        Enrollment.objects.get_or_create(student=student, course=course)
         
+        return Response({"message": f"Successfully enrolled {email}"}, status=200)
+
+    except User.DoesNotExist:
+        return Response({"message": "No student found with this email"}, status=404)
+    except Course.DoesNotExist:
+        return Response({"message": "Course not found"}, status=404)

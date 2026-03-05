@@ -12,6 +12,7 @@ class User(AbstractUser):
         
     role = models.CharField(max_length=25,choices=Role.choices, default=Role.ADMIN)
     bio = models.TextField(blank=True)
+    email = models.EmailField(unique=True)
     
     @property
     def is_teacher(self):

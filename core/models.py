@@ -2,8 +2,6 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.conf import settings
 
-# Create your models here.
-
 class CourseQuerySet(models.QuerySet):
     def published_free(self):
         return self.filter(is_published=True, price=0)
@@ -13,6 +11,7 @@ class CourseQuerySet(models.QuerySet):
 
 class Department(models.Model):
     name = models.CharField(max_length=100)
+    def __str__(self): return self.name
 
 class Course(models.Model):
     title = models.CharField(max_length=200)
@@ -26,22 +25,29 @@ class Course(models.Model):
     teacher = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE, 
-        limit_choices_to={'role': 'TEACHER'}
+        limit_choices_to={'role': 'TEACHER'},
+        related_name='created_courses'
+    )
+    
+    # RENAMED: from 'enrollment' to 'enrolled_students' to avoid E303 clash
+    enrolled_students = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name='enrolled_courses',
+        blank=True
     )
     
     objects = CourseQuerySet.as_manager()
 
     def clean(self):
-            # Validation logic
-            if self.is_published and self.price > 0:
-                raise ValidationError("Paid courses cannot be published.")
+        if self.is_published and self.price < 0:
+            raise ValidationError("Price must be in integer.")
 
     def save(self, *args, **kwargs):
-        # If we have a teacher, we can safely clean
         if self.teacher_id: 
             self.full_clean()
         super().save(*args, **kwargs)
 
+    def __str__(self): return self.title
 
 class Topic(models.Model):
     course = models.ForeignKey(Course, related_name='topics', on_delete=models.CASCADE)
@@ -55,7 +61,6 @@ class Topic(models.Model):
         return f"{self.course.code} - {self.title}"
 
 class Lesson(models.Model):
-    # Lesson types to differentiate between content, challenges, and projects
     LESSON_TYPES = (
         ('LESSON', 'Standard Lesson'),
         ('CHALLENGE', 'Daily Challenge'),
@@ -75,21 +80,28 @@ class Lesson(models.Model):
     def __str__(self):
         return f"[{self.lesson_type}] {self.title}"
 
-
 class Enrollment(models.Model):
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE,
-        limit_choices_to={'role': 'STUDENT'}
+        limit_choices_to={'role': 'STUDENT'},
+        related_name='enrollment_records' # Added related_name for clarity
     )
-    course = models.ForeignKey(Course, on_delete=models.CASCADE)
+    # The 'course' field here was causing the clash with Course.enrollment
+    course = models.ForeignKey(
+        Course, 
+        on_delete=models.CASCADE,
+        related_name='enrollments' # Now this is safe
+    )
     grade = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     enrolled_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('student', 'course') # Prevents double enrollment
-        
-        
+        unique_together = ('student', 'course')
+
+    def __str__(self):
+        return f"{self.student.email} in {self.course.title}"
+
 class CalendarEvent(models.Model):
     course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='events')
     title = models.CharField(max_length=200)
@@ -101,13 +113,14 @@ class Task(models.Model):
     course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='tasks')
     title = models.CharField(max_length=200)
     due_date = models.DateTimeField()
-    weight = models.IntegerField(default=10) # e.g., 10% of total grade
+    weight = models.IntegerField(default=10)
 
 class TaskSubmission(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='submissions')
     student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     file = models.FileField(upload_to='submissions/')
     is_completed = models.BooleanField(default=False)
-    progress_percentage = models.IntegerField(default=0)   
-    
-    
+    progress_percentage = models.IntegerField(default=0)
+    grade = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    feedback = models.TextField(blank=True)
+    is_graded = models.BooleanField(default=False)

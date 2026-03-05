@@ -4,9 +4,10 @@ from rest_framework.response import Response
 from django.contrib.auth import get_user_model, authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from .serializers import UserSerializer, RegisterSerializer
-from core.models import Course, TaskSubmission
+from core.models import Course, TaskSubmission 
 from core.serializers import CourseSerializer, TaskSubmissionSerializer
 from rest_framework.exceptions import PermissionDenied
+from django.db.models import Count
 
 User = get_user_model()
 
@@ -70,39 +71,6 @@ class UserViewSet(viewsets.ModelViewSet):
         return Response({'error': 'Invalid Credentials'}, status=status.HTTP_401_UNAUTHORIZED)
 
 
-class InstructorCourseViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = CourseSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        # Professional Logic: Only return courses where the current user is the teacher
-        return Course.objects.filter(teacher=self.request.user)
+ 
     
-    def perform_update(self, serializer):
-        # Ensure the person grading is the teacher assigned to the course
-        submission = self.get_object()
-        if submission.task.course.teacher != self.request.user:
-            raise PermissionDenied("You can only grade your own students.")
-        serializer.save()
-        
-class CourseViewSet(viewsets.ModelViewSet):
-    queryset = Course.objects.all()
-    serializer_class = CourseSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def perform_create(self, serializer):
-        # This automatically sets the teacher to the logged-in user
-        # 'self.request.user' is populated by DRF's authentication
-        serializer.save(teacher=self.request.user)
-        
-
-class SubmissionViewSet(viewsets.ModelViewSet):
-    serializer_class = TaskSubmissionSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        # Complex Query: Get submissions for all courses taught by this user
-        # This uses the 'double underscore' notation to reach across the relationship
-        return TaskSubmission.objects.filter(task__course__teacher=self.request.user)    
-
-   
+    

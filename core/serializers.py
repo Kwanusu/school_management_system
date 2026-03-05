@@ -54,7 +54,8 @@ class TaskSubmissionSerializer(serializers.ModelSerializer):
 class CourseSerializer(serializers.ModelSerializer):
     # Mark teacher as read-only so the frontend doesn't have to send it
     teacher = serializers.StringRelatedField(read_only=True)
-    topics = serializers.SerializerMethodField() # To handle the stringified JSON
+    # SerializerMethodField is for the GET response (Reading)
+    topics = serializers.SerializerMethodField() 
 
     class Meta:
         model = Course
@@ -62,33 +63,69 @@ class CourseSerializer(serializers.ModelSerializer):
             'id', 'title', 'code', 'description', 
             'price', 'is_published', 'thumbnail', 'teacher', 'topics'
         ]
-    def validate(self, data):
-        is_published = data.get('is_published')
-        price = data.get('price', 0)
 
-        if is_published and price > 0:
-            raise serializers.ValidationError(
-                {"is_published": "Paid courses cannot be set to Public (Free access)."}
-            )
-        return data        
+    def get_topics(self, obj):
+        """
+        REQUIRED: This solves your AttributeError.
+        This handles the 'Read' part of the topics field.
+        """
+        # We fetch the topics and their lessons to return to the frontend
+        topics_queryset = obj.topics.all() # Assuming related_name='topics' on Topic model
+        return [
+            {
+                "id": topic.id,
+                "title": topic.title,
+                "lessons": [
+                    {"id": lesson.id, "title": lesson.title} 
+                    for lesson in topic.lessons.all()
+                ]
+            }
+            for topic in topics_queryset
+        ]
+
+    def validate(self, data):
+        # During a PATCH, data only contains what changed. 
+        # Use getattr to check the current instance price if it's not in the request.
+        is_published = data.get('is_published', getattr(self.instance, 'is_published', False))
+        price = data.get('price', getattr(self.instance, 'price', 0))
+
+        # Convert price to float just in case it's a string
+        try:
+            price_val = float(price)
+        except (TypeError, ValueError):
+            price_val = 0
+
+        # CHANGE THIS: Only block if you have a specific rule, 
+        # but for now, let's allow publishing paid courses.
+        # If you want to prevent publishing without a price, do:
+        # if is_published and price_val <= 0:
+        #     raise serializers.ValidationError({"price": "Cannot publish a free course."})
+
+        return data 
 
     def create(self, validated_data):
-        # 1. Handle the stringified 'topics' from FormData
+        """Handles nested creation of Topics and Lessons from stringified JSON."""
         request = self.context.get('request')
         topics_raw = request.data.get('topics')
         
-        if isinstance(topics_raw, str):
-            topics_data = json.loads(topics_raw)
-        else:
-            topics_data = topics_raw or []
+        # 1. Parse stringified JSON from FormData
+        try:
+            if isinstance(topics_raw, str):
+                topics_data = json.loads(topics_raw)
+            else:
+                topics_data = topics_raw or []
+        except (json.JSONDecodeError, TypeError):
+            topics_data = []
 
-        # 2. Create the course (teacher is passed from perform_create)
+        # 2. Create the course
         course = Course.objects.create(**validated_data)
 
         # 3. Create nested Topics and Lessons
         for topic_item in topics_data:
+            # Safely extract lessons
             lessons_data = topic_item.pop('lessons', [])
             topic = Topic.objects.create(course=course, **topic_item)
+            
             for lesson_item in lessons_data:
                 Lesson.objects.create(topic=topic, **lesson_item)
                 
